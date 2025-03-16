@@ -1,0 +1,662 @@
+---
+title: "NFLFastR"
+output: html_document
+date: "2024-10-29"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Installing Packages:
+
+```{r}
+#install.packages("tidyverse", type = "binary")
+#install.packages("ggrepel", type = "binary")
+#install.packages("nflreadr", type = "binary")
+#install.packages("nflplotR", type = "binary")
+#install.packages("gsisdecoder")
+#install.packages("slider")
+#install.packages("car")
+```
+
+
+Collecting the Data
+
+```{r}
+library(slider)
+library(nflfastR)
+library(dplyr, warn.conflicts = FALSE)
+library(gsisdecoder)
+library(car)
+ids <- nflfastR::fast_scraper_schedules(2017:2019) %>%
+  dplyr::filter(game_type == "SB") %>%
+  dplyr::pull(game_id)
+pbp <- nflfastR::build_nflfastR_pbp(ids)
+```
+
+
+## Loading PBP Data
+
+
+```{r}
+data_2024 <- load_pbp(2024)
+  data_2024$season <- 2024
+data_2023 <- load_pbp(2023)
+  data_2023$season <- 2023
+data_2022 <- load_pbp(2022)
+  data_2022$season <- 2022
+data_2021 <- load_pbp(2021)
+  data_2021$season <- 2021
+data_2020 <- load_pbp(2020)
+  data_2020$season <- 2020
+data_2019 <- load_pbp(2019)
+  data_2019$season <- 2019
+data_2018 <- load_pbp(2018)
+  data_2018$season <- 2018
+data_2017 <- load_pbp(2017)
+  data_2017$season <- 2017
+
+
+pbp_data <- rbind(data_2024,data_2023,data_2022,data_2021,data_2020,data_2019,data_2018,data_2017)
+#View(pbp_data)
+```
+
+
+### Creating the Schedule ###
+
+
+```{r}
+schedule_data_2024 <- fast_scraper_schedules(2024)
+schedule_data_2023 <- fast_scraper_schedules(2023)
+schedule_data_2022 <- fast_scraper_schedules(2022)
+schedule_data_2021 <- fast_scraper_schedules(2021)
+schedule_data_2020 <- fast_scraper_schedules(2020)
+schedule_data_2019 <- fast_scraper_schedules(2019)
+
+schedule_data <- rbind(schedule_data_2024,schedule_data_2023,schedule_data_2022,schedule_data_2021,
+                       schedule_data_2020,schedule_data_2019)
+
+#View(schedule_data)
+```
+
+
+### Creating synthetic data ###
+
+
+```{r}
+test_sch <- schedule_data %>% select("game_id","season","week","gameday","away_team","home_team")
+
+test_sch <- rename(test_sch, "game_date" = "gameday")
+
+# Create the desired structure
+expanded_df <- test_sch %>%
+  # Create the first set of rows (home_team as posteam)
+  mutate(posteam = home_team, defteam = away_team) %>%
+  # Add the second set of rows (away_team as posteam)
+  bind_rows(
+    test_sch %>%
+      mutate(posteam = away_team, defteam = home_team)
+  )
+
+pbp_data <- bind_rows(expanded_df, pbp_data)
+```
+
+
+### Team Stats Per Game ###
+
+
+```{r}
+# Add a new column to classify explosive plays
+pbp_data <- pbp_data %>%
+  mutate(explosive_play = case_when(
+    play_type == "run" & yards_gained >= 10 ~ "Explosive Run",
+    play_type == "pass" & yards_gained >= 20 ~ "Explosive Pass",
+    TRUE ~ "Non-Explosive"
+  ))
+
+# Summarize team statistics, focusing on points scored by the team
+team_stats_for <- pbp_data %>%
+  group_by(posteam, season, week, game_date) %>%
+  summarize(
+    points_for = max(posteam_score, na.rm = TRUE), # Points scored by the team
+    yards_for = sum(yards_gained, na.rm = TRUE),
+    plays_for = n(),
+    avg_epa_for = mean(epa, na.rm = TRUE),
+    success_rate_for = mean(success, na.rm = TRUE),
+    pass_attempts_for = sum(play_type == "pass", na.rm = TRUE),
+    run_attempts_for = sum(play_type == "run", na.rm = TRUE),
+    pass_rate_for = pass_attempts_for / (pass_attempts_for + run_attempts_for),
+    ex_runs_for = sum(explosive_play == "Explosive Run"),
+    ex_pass_for = sum(explosive_play == "Explosive Pass"),
+    ex_plays_for = sum(ex_runs_for + ex_pass_for),
+    ex_pct_for = (ex_plays_for / plays_for))
+
+team_stats_against <- pbp_data %>%
+  group_by(defteam, season, week, game_date) %>%
+  summarize(
+    points_against = max(posteam_score, na.rm = TRUE), # Points scored by the team
+    yards_against = sum(yards_gained, na.rm = TRUE),
+    plays_against = n(),
+    avg_epa_against = mean(epa, na.rm = TRUE),
+    success_rate_against = mean(success, na.rm = TRUE),
+    pass_attempts_against = sum(play_type == "pass", na.rm = TRUE),
+    run_attempts_against = sum(play_type == "run", na.rm = TRUE),
+    pass_rate_against = pass_attempts_against / (pass_attempts_against + run_attempts_against),
+    ex_runs_against = sum(explosive_play == "Explosive Run"),
+    ex_pass_against = sum(explosive_play == "Explosive Pass"),
+    ex_plays_against = sum(ex_runs_against + ex_pass_against),
+    ex_pct_against = (ex_plays_against / plays_against))
+
+#View(team_stats_for)
+#View(team_stats_against)
+
+### Merging the Datasets
+
+team_stats <- team_stats_for %>%
+  left_join(team_stats_against, by = c("posteam" = "defteam","season" = "season","week" = "week",
+                                       "game_date"="game_date"))
+
+#View(team_stats)
+```
+
+
+### Define Functions for Slide_DBL ###
+
+
+```{r}
+#Weighted EPA Against Function
+weighted_epaf_function <- function(avg_epa_for, plays_for) {
+  sum(avg_epa_for * plays_for) / sum(plays_for)
+}
+
+#Weighted EPA Against Function
+weighted_epaa_function <- function(avg_epa_against, plays_against) {
+  sum(avg_epa_against * plays_against) / sum(plays_against)
+}
+
+#Weighted Success Rate For Function
+weighted_srf_function <- function(success_rate_for, plays_for) {
+  sum(success_rate_for * plays_for) / sum(plays_for)
+}
+
+#Weighted Success Rate Against Function
+weighted_sra_function <- function(success_rate_against, plays_against) {
+  sum(success_rate_against * plays_against) / sum(plays_against)
+}
+
+#Weighted Pass Rate For Function
+weighted_prf_function <- function(pass_rate_for, pass_attempts_for) {
+  sum(pass_rate_for * pass_attempts_for) / sum(pass_attempts_for)
+}
+
+#Weighted Pass Rate Against Function
+weighted_pra_function <- function(pass_rate_against, pass_attempts_against) {
+  sum(pass_rate_against * pass_attempts_against) / sum(pass_attempts_against)
+}
+
+#Weighted Ex Play Rate For Function
+weighted_xprf_function <- function(ex_pct_for, plays_for) {
+  sum(ex_pct_for * plays_for) / sum(plays_for)
+}
+
+#Weighted Ex Play Rate Against Function
+weighted_xpra_function <- function(ex_pct_against, plays_against) {
+  sum(ex_pct_against * plays_against) / sum(plays_against)
+}
+```
+
+
+### Creating Rolling Averages ###
+
+
+```{r}
+team_rolling_averages <- team_stats %>%
+  arrange(posteam, game_date) %>%
+  group_by(posteam) %>%
+  mutate(rapf_2W = slide_dbl(points_for, mean, .before = 2, .after = -1, .complete = TRUE),
+         rapf_4W = slide_dbl(points_for, mean, .before = 4, .after = -1, .complete = TRUE),
+         rapf_8W = slide_dbl(points_for, mean, .before = 8, .after = -1, .complete = TRUE),
+         rapf_17W = slide_dbl(points_for, mean, .before = 17, .after = -1, .complete = TRUE),
+         rapa_2W = slide_dbl(points_against, mean, .before = 2, .after = -1, .complete = TRUE),
+         rapa_4W = slide_dbl(points_against, mean, .before = 4, .after = -1, .complete = TRUE),
+         rapa_8W = slide_dbl(points_against, mean, .before = 8, .after = -1, .complete = TRUE),
+         rapa_17W = slide_dbl(points_against, mean, .before = 17, .after = -1, .complete = TRUE),
+         rayf_2W = slide_dbl(yards_for, mean, .before = 2, .after = -1, .complete = TRUE),
+         rayf_4W = slide_dbl(yards_for, mean, .before = 4, .after = -1, .complete = TRUE),
+         rayf_8W = slide_dbl(yards_for, mean, .before = 8, .after = -1, .complete = TRUE),
+         rayf_17W = slide_dbl(yards_for, mean, .before = 17, .after = -1, .complete = TRUE),
+         raya_2W = slide_dbl(yards_against, mean, .before = 2, .after = -1, .complete = TRUE),
+         raya_4W = slide_dbl(yards_against, mean, .before = 4, .after = -1, .complete = TRUE),
+         raya_8W = slide_dbl(yards_against, mean, .before = 8, .after = -1, .complete = TRUE),
+         raya_17W = slide_dbl(yards_against, mean, .before = 17, .after = -1, .complete = TRUE),
+         raplf_2W = slide_dbl(plays_for, mean, .before = 2, .after = -1, .complete = TRUE),
+         raplf_4W = slide_dbl(plays_for, mean, .before = 4, .after = -1, .complete = TRUE),
+         raplf_8W = slide_dbl(plays_for, mean, .before = 8, .after = -1, .complete = TRUE),
+         raplf_17W = slide_dbl(plays_for, mean, .before = 17, .after = -1, .complete = TRUE),
+         rapla_2W = slide_dbl(plays_against, mean, .before = 2, .after = -1, .complete = TRUE),
+         rapla_4W = slide_dbl(plays_against, mean, .before = 4, .after = -1, .complete = TRUE),
+         rapla_8W = slide_dbl(plays_against, mean, .before = 8, .after = -1, .complete = TRUE),
+         rapla_17W = slide_dbl(plays_against, mean, .before = 17, .after = -1, .complete = TRUE),
+         rwepaf_2W=slide_dbl(.x=avg_epa_for,.y=plays_for,.f=~weighted_epaf_function(.x,.y),
+                             .before=2,.after=-1,.complete=TRUE),
+         rwepaf_4W=slide_dbl(.x=avg_epa_for,.y=plays_for,.f=~weighted_epaf_function(.x,.y),
+                             .before=4,.after=-1,.complete=TRUE),
+         rwepaf_8W=slide_dbl(.x=avg_epa_for,.y=plays_for,.f=~weighted_epaf_function(.x,.y),
+                             .before=8,.after=-1,.complete=TRUE),
+         rwepaf_17W=slide_dbl(.x=avg_epa_for,.y=plays_for,.f=~weighted_epaf_function(.x,.y),
+                              .before=17,.after=-1,.complete=TRUE),
+         rwepaa_2W=slide_dbl(.x=avg_epa_against,.y=plays_against,.f=~weighted_epaa_function(.x,.y),
+                             .before=2,.after=-1,.complete=TRUE),
+         rwepaa_4W=slide_dbl(.x=avg_epa_against,.y=plays_against,.f=~weighted_epaa_function(.x,.y),
+                             .before=4,.after=-1,.complete=TRUE),
+         rwepaa_8W=slide_dbl(.x=avg_epa_against,.y=plays_against,.f=~weighted_epaa_function(.x,.y),
+                             .before=8,.after=-1,.complete=TRUE),
+         rwepaa_17W=slide_dbl(.x=avg_epa_against,.y=plays_against,.f=~weighted_epaa_function(.x,.y),
+                              .before=17,.after=-1,.complete=TRUE),
+         rwsrf_2W=slide_dbl(.x=success_rate_for,.y=plays_for,.f=~weighted_srf_function(.x,.y),
+                            .before=2,.after=-1,.complete=TRUE),
+         rwsrf_4W=slide_dbl(.x=success_rate_for,.y=plays_for,.f=~weighted_srf_function(.x,.y),
+                            .before=4,.after=-1,.complete=TRUE),
+         rwsrf_8W=slide_dbl(.x=success_rate_for,.y=plays_for,.f=~weighted_srf_function(.x,.y),
+                            .before=8,.after=-1,.complete=TRUE),
+         rwsrf_17W=slide_dbl(.x=success_rate_for,.y=plays_for,.f=~weighted_srf_function(.x,.y),
+                             .before=17,.after=-1,.complete=TRUE),
+         rwsra_2W=slide_dbl(.x=success_rate_against,.y=plays_against,.f=~weighted_sra_function(.x,.y),
+                            .before=2,.after=-1,.complete=TRUE),
+         rwsra_4W=slide_dbl(.x=success_rate_against,.y=plays_against,.f=~weighted_sra_function(.x,.y),
+                            .before=4,.after=-1,.complete=TRUE),
+         rwsra_8W=slide_dbl(.x=success_rate_against,.y=plays_against,.f=~weighted_sra_function(.x,.y),
+                            .before=8,.after=-1,.complete=TRUE),
+         rwsra_17W=slide_dbl(.x=success_rate_against,.y=plays_against,.f=~weighted_sra_function(.x,.y),
+                             .before=17,.after=-1,.complete=TRUE),
+         rwprf_2W=slide_dbl(.x=pass_rate_for,.y=pass_attempts_for,.f=~weighted_prf_function(.x,.y),
+                            .before=2,.after=-1,.complete=TRUE),
+         rwprf_4W=slide_dbl(.x=pass_rate_for,.y=pass_attempts_for,.f=~weighted_prf_function(.x,.y),
+                            .before=4,.after=-1,.complete=TRUE),
+         rwprf_8W=slide_dbl(.x=pass_rate_for,.y=pass_attempts_for,.f=~weighted_prf_function(.x,.y),
+                            .before=8,.after=-1,.complete=TRUE),
+         rwprf_17W=slide_dbl(.x=pass_rate_for,.y=pass_attempts_for,.f=~weighted_prf_function(.x,.y),
+                             .before=17,.after=-1,.complete=TRUE),
+         rwpra_2W=slide_dbl(.x=pass_rate_against,.y=pass_attempts_against,.f=~weighted_pra_function(.x,.y),
+                            .before=2,.after=-1,.complete=TRUE),
+         rwpra_4W=slide_dbl(.x=pass_rate_against,.y=pass_attempts_against,.f=~weighted_pra_function(.x,.y),
+                            .before=4,.after=-1,.complete=TRUE),
+         rwpra_8W=slide_dbl(.x=pass_rate_against,.y=pass_attempts_against,.f=~weighted_pra_function(.x,.y),
+                            .before=8,.after=-1,.complete=TRUE),
+         rwpra_17W=slide_dbl(.x=pass_rate_against,.y=pass_attempts_against,.f=~weighted_pra_function(.x,.y),
+                             .before=17,.after=-1,.complete=TRUE),
+         raxrf_2W = slide_dbl(ex_runs_for, mean, .before = 2, .after = -1, .complete = TRUE),
+         raxrf_4W = slide_dbl(ex_runs_for, mean, .before = 4, .after = -1, .complete = TRUE),
+         raxrf_8W = slide_dbl(ex_runs_for, mean, .before = 8, .after = -1, .complete = TRUE),
+         raxrf_17W = slide_dbl(ex_runs_for, mean, .before = 17, .after = -1, .complete = TRUE),
+         raxpf_2W = slide_dbl(ex_pass_for, mean, .before = 2, .after = -1, .complete = TRUE),
+         raxpf_4W = slide_dbl(ex_pass_for, mean, .before = 4, .after = -1, .complete = TRUE),
+         raxpf_8W = slide_dbl(ex_pass_for, mean, .before = 8, .after = -1, .complete = TRUE),
+         raxpf_17W = slide_dbl(ex_pass_for, mean, .before = 17, .after = -1, .complete = TRUE),
+         raxplf_2W = slide_dbl(ex_plays_for, mean, .before = 2, .after = -1, .complete = TRUE),
+         raxplf_4W = slide_dbl(ex_plays_for, mean, .before = 4, .after = -1, .complete = TRUE),
+         raxplf_8W = slide_dbl(ex_plays_for, mean, .before = 8, .after = -1, .complete = TRUE),
+         raxplf_17W = slide_dbl(ex_plays_for, mean, .before = 17, .after = -1, .complete = TRUE),
+         raxra_2W = slide_dbl(ex_runs_against, mean, .before = 2, .after = -1, .complete = TRUE),
+         raxra_4W = slide_dbl(ex_runs_against, mean, .before = 4, .after = -1, .complete = TRUE),
+         raxra_8W = slide_dbl(ex_runs_against, mean, .before = 8, .after = -1, .complete = TRUE),
+         raxra_17W = slide_dbl(ex_runs_against, mean, .before = 17, .after = -1, .complete = TRUE),
+         raxpa_2W = slide_dbl(ex_pass_against, mean, .before = 2, .after = -1, .complete = TRUE),
+         raxpa_4W = slide_dbl(ex_pass_against, mean, .before = 4, .after = -1, .complete = TRUE),
+         raxpa_8W = slide_dbl(ex_pass_against, mean, .before = 8, .after = -1, .complete = TRUE),
+         raxpa_17W = slide_dbl(ex_pass_against, mean, .before = 17, .after = -1, .complete = TRUE),
+         raxpla_2W = slide_dbl(ex_plays_against, mean, .before = 2, .after = -1, .complete = TRUE),
+         raxpla_4W = slide_dbl(ex_plays_against, mean, .before = 4, .after = -1, .complete = TRUE),
+         raxpla_8W = slide_dbl(ex_plays_against, mean, .before = 8, .after = -1, .complete = TRUE),
+         raxpla_17W = slide_dbl(ex_plays_against, mean, .before = 17, .after = -1, .complete = TRUE),
+         rwxprf_2W=slide_dbl(.x=ex_pct_for,.y=plays_for,.f=~weighted_xprf_function(.x,.y),
+                            .before=2,.after=-1,.complete=TRUE),
+         rwxprf_4W=slide_dbl(.x=ex_pct_for,.y=plays_for,.f=~weighted_xprf_function(.x,.y),
+                            .before=4,.after=-1,.complete=TRUE),
+         rwxprf_8W=slide_dbl(.x=ex_pct_for,.y=plays_for,.f=~weighted_xprf_function(.x,.y),
+                            .before=8,.after=-1,.complete=TRUE),
+         rwxprf_17W=slide_dbl(.x=ex_pct_for,.y=plays_for,.f=~weighted_xprf_function(.x,.y),
+                            .before=17,.after=-1,.complete=TRUE),
+         rwxpra_2W=slide_dbl(.x=ex_pct_against,.y=plays_against,.f=~weighted_xpra_function(.x,.y),
+                            .before=2,.after=-1,.complete=TRUE),
+         rwxpra_4W=slide_dbl(.x=ex_pct_against,.y=plays_against,.f=~weighted_xpra_function(.x,.y),
+                            .before=4,.after=-1,.complete=TRUE),
+         rwxpra_8W=slide_dbl(.x=ex_pct_against,.y=plays_against,.f=~weighted_xpra_function(.x,.y),
+                            .before=8,.after=-1,.complete=TRUE),
+         rwxpra_17W=slide_dbl(.x=ex_pct_against,.y=plays_against,.f=~weighted_xpra_function(.x,.y),
+                            .before=17,.after=-1,.complete=TRUE)) %>%
+  ungroup()
+
+#View(team_rolling_averages)
+```
+
+
+### Merging our Datasets ###
+
+
+```{r}
+# Merging Home Stats
+
+home_df <- schedule_data %>%
+  left_join(team_rolling_averages, by = c("home_team"="posteam","season"="season","week"="week"))
+
+# Merging Away Stats
+
+merged_df <- home_df %>%
+  left_join(team_rolling_averages, by = c("away_team"="posteam","season"="season","week"="week"))
+
+# Renaming our Variables
+
+merged_df <- merged_df %>%
+  rename_with(~ gsub("\\.x$", "_home", .), ends_with(".x")) %>%
+  rename_with(~ gsub("\\.y$", "_away", .), ends_with(".y"))
+
+merged_df$home_cover <- ifelse(merged_df$result > merged_df$spread_line, 1, 0)
+
+merged_df$home_win <- ifelse(merged_df$result > 0, 1, 0)
+
+# View the result
+
+#View(merged_df)
+```
+
+
+### Dropping the Current Week Variables ###
+
+
+```{r}
+merged_df <- merged_df %>% select(-"points_for_home",-"yards_for_home",-"plays_for_home",-"avg_epa_for_home",
+                                  -"success_rate_for_home",-"pass_attempts_for_home",-"run_attempts_for_home",
+                                  -"pass_rate_for_home",-"points_against_home",-"yards_against_home",
+                                  -"plays_against_home",-"avg_epa_against_home",-"success_rate_against_home",
+                                  -"pass_attempts_against_home",-"run_attempts_against_home",
+                                  -"pass_rate_against_home",-"points_for_away",-"yards_for_away",
+                                  -"plays_for_away",-"avg_epa_for_away",-"success_rate_for_away",
+                                  -"pass_attempts_for_away",-"run_attempts_for_away",
+                                  -"pass_rate_for_away",-"points_against_away",-"yards_against_away",
+                                  -"plays_against_away",-"avg_epa_against_away",-"success_rate_against_away",
+                                  -"pass_attempts_against_away",-"run_attempts_against_away",
+                                  -"pass_rate_against_away",
+                                  -"old_game_id",-"gsis",-"nfl_detail_id",-"pfr",-"pff",-"espn",-"ftn",
+                                  -"ex_runs_for_home",-"ex_pass_for_home",-"ex_plays_for_home",
+                                  -"ex_pct_for_home",-"ex_runs_against_home",-"ex_pass_against_home",
+                                  -"ex_plays_against_home",-"ex_pct_against_home",
+                                  -"ex_runs_for_away",-"ex_pass_for_away",-"ex_plays_for_away",
+                                  -"ex_pct_for_away",-"ex_runs_against_away",-"ex_pass_against_away",
+                                  -"ex_plays_against_away",-"ex_pct_against_away")
+
+#View(merged_df)
+```
+
+
+### Separating the Future Data ###
+
+
+```{r}
+df_future <- merged_df %>% filter(gameday >= Sys.Date())
+
+merged_df <- merged_df %>% filter(gameday < Sys.Date())
+
+#View(df_future)
+```
+
+
+### Removing our Playoff Data ###
+
+
+```{r}
+table(merged_df$game_type)
+
+merged_df_corr <- merged_df %>% filter(game_type == "REG")
+
+table(merged_df_corr$game_type)
+
+#View(merged_df_corr)
+```
+
+
+### Data Standardization ###
+
+
+```{r}
+# Standardization function for data.table
+standardize_dt <- function(dt, exclude_cols) {
+  # Identify numeric columns to standardize
+  numeric_cols <- setdiff(names(dt)[sapply(dt, is.numeric)], exclude_cols)
+  
+  # Apply standardization
+  dt[, (numeric_cols) := lapply(.SD, scale), .SDcols = numeric_cols]
+}
+
+# List of columns to exclude
+exclude_columns <- c("home_cover","home_win","away_score","home_score","away_rest","home_rest","week","season",
+                     "result")
+
+# Apply standardization
+data_standardized <- standardize_dt(merged_df_corr, exclude_cols = exclude_columns)
+
+# Inspect the standardized data
+summary(data_standardized)
+```
+
+
+### Splitting the Data into Train, Test, and Validation ###
+
+
+```{r}
+set.seed(123)  # For reproducibility
+sample_index <- sample(1:nrow(merged_df_corr), size = 0.7 * nrow(merged_df_corr))  # 70% for training
+
+train <- merged_df[sample_index, ]
+test <- merged_df[-sample_index, ]
+
+#View(train)
+#View(test)
+```
+
+
+### Reformatting our Training Set ###
+
+
+```{r}
+train <- train %>% select(-"game_type",-"away_score",-"home_score",-"overtime",-"total",
+                          -"surface",-"temp",-"wind",-"spread_line",-"home_moneyline",-"away_moneyline",
+                          -"week",-"season",-"away_spread_odds",-"home_spread_odds",-"total_line",-"under_odds",
+                          -"over_odds",-"game_date_home",-"game_date_away",-"gameday",-"game_id",-"stadium",
+                          -"stadium_id",-"location", -"result", -"home_win", -"weekday")
+
+train <- na.omit(train)
+
+#View(train)
+```
+
+
+
+### Fitting out Linear Regression Model ###
+
+
+```{r}
+# Fit logistic regression model
+full_model <- glm(home_cover ~ ., data = train, family = binomial)
+
+# Fit a null model (only the intercept)
+null_model <- glm(home_cover ~ 1, data = train, family = binomial)
+
+# Perform stepwise selection
+stepwise_model <- step(null_model, 
+                       scope = list(lower = null_model, upper = full_model), 
+                       direction = "forward")
+
+# Summary of the selected model
+summary(stepwise_model)
+
+```
+
+
+### Checking the Model Assumptions ###
+
+
+```{r}
+#Linearity
+plot(stepwise_model$fitted.values, stepwise_model$residuals)
+abline(h = 0, col = "red")
+
+#Normality of Residuals
+qqnorm(stepwise_model$residuals)
+qqline(stepwise_model$residuals, col = "red")
+
+#Homoscedasticity
+plot(stepwise_model$fitted.values, abs(stepwise_model$residuals))
+abline(h = 0, col = "red")
+
+#Multicollinearity
+vif(stepwise_model)
+```
+
+
+### Determining Optimal Cutpoint Threshold ###
+
+
+```{r}
+#install.packages("pROC")
+library(pROC)
+
+# Generate ROC curve
+roc_curve <- roc(test$home_cover, test$pred_prob)
+
+# Determine the optimal threshold using Youden's J statistic
+optimal_cutpoint <- coords(roc_curve, "best", ret = "threshold", best.method = "youden")
+print(optimal_cutpoint)
+```
+
+
+### Predictions ###
+
+
+```{r}
+#install.packages("caret")
+library(caret)
+
+test$pred_prob <- predict(stepwise_model, newdata = test, type="response")
+
+test$pred_class <- ifelse(test$pred_prob > 0.5647559, 1, 0)
+
+test_table <- test %>% select("game_id","season","week","home_team","away_team","home_cover",
+                              "spread_line","pred_prob","pred_class")
+
+test_table <- na.omit(test_table)
+
+test_table$home_cover <- factor(test_table$home_cover)
+test_table$pred_class <- factor(test_table$pred_class)
+
+View(test_table)
+
+# Confusion matrix
+#table(Predicted = test_table$pred_class, Actual = test_table$home_win)
+
+# Create confusion matrix
+conf_matrix <- confusionMatrix(
+  factor(test_table$pred_class), 
+  factor(test_table$home_cover), 
+  positive = "1"  # Specify the positive class
+)
+
+# Print confusion matrix and metrics
+print(conf_matrix)
+```
+
+
+### Yardstick Confusion Matrix ###
+
+
+```{r}
+#install.packages("yardstick")
+#install.packages("tibble")
+library(yardstick)
+library(tibble)
+
+# Compute confusion matrix and metrics
+conf_matrix <- test_table %>%
+  conf_mat(truth = home_win, estimate = pred_class)
+
+# Print confusion matrix
+print(conf_matrix)
+
+# Generate metrics like accuracy, sensitivity, specificity
+metrics <- conf_matrix %>%
+  summary()
+
+# Install and load reactable
+#install.packages("reactable")
+library(reactable)
+
+# Convert confusion matrix to a data frame
+conf_matrix_df <- as.data.frame(conf_matrix$table)
+
+# Create an interactive table
+reactable(conf_matrix_df, 
+          columns = list(
+            Prediction = colDef(name = "Prediction"),
+            Actual = colDef(name = "Actual"),
+            n = colDef(name = "Count")
+          ),
+          bordered = TRUE,
+          striped = TRUE,
+          highlight = TRUE)
+```
+
+
+### Predicting this Week's Games ###
+
+
+```{r}
+upcoming_week <- df_future %>% filter(week == 13)
+
+#View(upcoming_week)
+
+upcoming_week$pred_prob <- predict(stepwise_model, newdata = upcoming_week, type="response")
+
+upcoming_week$pred_class <- ifelse(upcoming_week$pred_prob > 0.5647559, 1, 0)
+
+uw_table <- upcoming_week %>% select("game_id","season","week","home_team","away_team","home_cover",
+                              "spread_line","pred_prob","pred_class")
+
+View(uw_table)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
