@@ -35,3 +35,17 @@ data_2017 <- load_pbp(2017)
 pbp_data <- rbind(data_2024,data_2023,data_2022,data_2021,data_2020,data_2019,data_2018,data_2017)
 #View(pbp_data)
 ```
+Creating the Schedule
+```
+schedule_data_2024 <- fast_scraper_schedules(2024)
+schedule_data_2023 <- fast_scraper_schedules(2023)
+schedule_data_2022 <- fast_scraper_schedules(2022)
+schedule_data_2021 <- fast_scraper_schedules(2021)
+schedule_data_2020 <- fast_scraper_schedules(2020)
+schedule_data_2019 <- fast_scraper_schedules(2019)
+
+schedule_data <- rbind(schedule_data_2024,schedule_data_2023,schedule_data_2022,schedule_data_2021,
+                       schedule_data_2020,schedule_data_2019)
+
+#View(schedule_data)
+```
