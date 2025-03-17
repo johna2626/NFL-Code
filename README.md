@@ -67,3 +67,99 @@ expanded_df <- test_sch %>%
 
 pbp_data <- bind_rows(expanded_df, pbp_data)
 ```
+Collecting Team Stats per Game:
+```{r}
+# Add a new column to classify explosive plays
+pbp_data <- pbp_data %>%
+  mutate(explosive_play = case_when(
+    play_type == "run" & yards_gained >= 10 ~ "Explosive Run",
+    play_type == "pass" & yards_gained >= 20 ~ "Explosive Pass",
+    TRUE ~ "Non-Explosive"
+  ))
+
+# Summarize team statistics, focusing on points scored by the team
+team_stats_for <- pbp_data %>%
+  group_by(posteam, season, week, game_date) %>%
+  summarize(
+    points_for = max(posteam_score, na.rm = TRUE), # Points scored by the team
+    yards_for = sum(yards_gained, na.rm = TRUE),
+    plays_for = n(),
+    avg_epa_for = mean(epa, na.rm = TRUE),
+    success_rate_for = mean(success, na.rm = TRUE),
+    pass_attempts_for = sum(play_type == "pass", na.rm = TRUE),
+    run_attempts_for = sum(play_type == "run", na.rm = TRUE),
+    pass_rate_for = pass_attempts_for / (pass_attempts_for + run_attempts_for),
+    ex_runs_for = sum(explosive_play == "Explosive Run"),
+    ex_pass_for = sum(explosive_play == "Explosive Pass"),
+    ex_plays_for = sum(ex_runs_for + ex_pass_for),
+    ex_pct_for = (ex_plays_for / plays_for))
+
+team_stats_against <- pbp_data %>%
+  group_by(defteam, season, week, game_date) %>%
+  summarize(
+    points_against = max(posteam_score, na.rm = TRUE), # Points scored by the team
+    yards_against = sum(yards_gained, na.rm = TRUE),
+    plays_against = n(),
+    avg_epa_against = mean(epa, na.rm = TRUE),
+    success_rate_against = mean(success, na.rm = TRUE),
+    pass_attempts_against = sum(play_type == "pass", na.rm = TRUE),
+    run_attempts_against = sum(play_type == "run", na.rm = TRUE),
+    pass_rate_against = pass_attempts_against / (pass_attempts_against + run_attempts_against),
+    ex_runs_against = sum(explosive_play == "Explosive Run"),
+    ex_pass_against = sum(explosive_play == "Explosive Pass"),
+    ex_plays_against = sum(ex_runs_against + ex_pass_against),
+    ex_pct_against = (ex_plays_against / plays_against))
+
+#View(team_stats_for)
+#View(team_stats_against)
+
+### Merging the Datasets
+
+team_stats <- team_stats_for %>%
+  left_join(team_stats_against, by = c("posteam" = "defteam","season" = "season","week" = "week",
+                                       "game_date"="game_date"))
+
+#View(team_stats)
+```
+Define Functions for Slide_DBL
+```{r}
+#Weighted EPA Against Function
+weighted_epaf_function <- function(avg_epa_for, plays_for) {
+  sum(avg_epa_for * plays_for) / sum(plays_for)
+}
+
+#Weighted EPA Against Function
+weighted_epaa_function <- function(avg_epa_against, plays_against) {
+  sum(avg_epa_against * plays_against) / sum(plays_against)
+}
+
+#Weighted Success Rate For Function
+weighted_srf_function <- function(success_rate_for, plays_for) {
+  sum(success_rate_for * plays_for) / sum(plays_for)
+}
+
+#Weighted Success Rate Against Function
+weighted_sra_function <- function(success_rate_against, plays_against) {
+  sum(success_rate_against * plays_against) / sum(plays_against)
+}
+
+#Weighted Pass Rate For Function
+weighted_prf_function <- function(pass_rate_for, pass_attempts_for) {
+  sum(pass_rate_for * pass_attempts_for) / sum(pass_attempts_for)
+}
+
+#Weighted Pass Rate Against Function
+weighted_pra_function <- function(pass_rate_against, pass_attempts_against) {
+  sum(pass_rate_against * pass_attempts_against) / sum(pass_attempts_against)
+}
+
+#Weighted Ex Play Rate For Function
+weighted_xprf_function <- function(ex_pct_for, plays_for) {
+  sum(ex_pct_for * plays_for) / sum(plays_for)
+}
+
+#Weighted Ex Play Rate Against Function
+weighted_xpra_function <- function(ex_pct_against, plays_against) {
+  sum(ex_pct_against * plays_against) / sum(plays_against)
+}
+```
