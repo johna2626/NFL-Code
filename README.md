@@ -49,3 +49,21 @@ schedule_data <- rbind(schedule_data_2024,schedule_data_2023,schedule_data_2022,
 
 #View(schedule_data)
 ```
+Creation of Synthetic Data:
+```{r}
+test_sch <- schedule_data %>% select("game_id","season","week","gameday","away_team","home_team")
+
+test_sch <- rename(test_sch, "game_date" = "gameday")
+
+# Create the desired structure
+expanded_df <- test_sch %>%
+  # Create the first set of rows (home_team as posteam)
+  mutate(posteam = home_team, defteam = away_team) %>%
+  # Add the second set of rows (away_team as posteam)
+  bind_rows(
+    test_sch %>%
+      mutate(posteam = away_team, defteam = home_team)
+  )
+
+pbp_data <- bind_rows(expanded_df, pbp_data)
+```
